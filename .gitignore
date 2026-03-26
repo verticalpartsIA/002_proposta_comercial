@@ -1,0 +1,12 @@
+# Configurações e Senhas
+.env.php
+db.php
+config.php
+
+# Pastas de dependências e lixo
+vendor/
+.trash/
+*.txt
+
+# Logs
+*.log

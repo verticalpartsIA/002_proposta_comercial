@@ -1,5 +1,0 @@
-Array
-(
-    [proposalId] => 123
-    [html] => TESTE
-)
