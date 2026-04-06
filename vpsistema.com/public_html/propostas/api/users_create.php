@@ -16,13 +16,19 @@ if (($admin['role'] ?? '') !== 'admin') {
 
 $data = body_json();
 
-$name = trim((string)($data['name'] ?? ''));
-$email = trim((string)($data['email'] ?? ''));
+$name     = trim((string)($data['name']     ?? ''));
+$email    = trim(strtolower((string)($data['email']    ?? '')));
 $password = (string)($data['password'] ?? '');
-$role = (string)($data['role'] ?? 'user');
+$role     = (string)($data['role']     ?? 'user');
+$screens  = is_array($data['screens'] ?? null) ? $data['screens'] : [];
 
 if ($name === '' || $email === '' || $password === '') {
   json_out(['error' => 'Dados incompletos'], 400);
+}
+
+$validRoles = ['admin', 'gerente', 'vendedor', 'user'];
+if (!in_array($role, $validRoles, true)) {
+  $role = 'user';
 }
 
 $pdo = db();
@@ -35,24 +41,28 @@ if ($stmt->fetch()) {
 }
 
 // Cria usuário
+$screensJson = json_encode(array_values($screens), JSON_UNESCAPED_UNICODE);
+
 $stmt = $pdo->prepare("
-  INSERT INTO users (name, email, password_hash, role, is_active, created_at)
-  VALUES (?, ?, ?, ?, 1, ?)
+  INSERT INTO users (name, email, password_hash, role, screens, is_active, created_at)
+  VALUES (?, ?, ?, ?, ?, 1, ?)
 ");
 $stmt->execute([
   $name,
   $email,
   password_hash($password, PASSWORD_DEFAULT),
-  $role === 'admin' ? 'admin' : 'user',
+  $role,
+  $screensJson,
   date('Y-m-d H:i:s'),
 ]);
 
 json_out([
-  'ok' => true,
+  'ok'   => true,
   'user' => [
-    'id' => (int)$pdo->lastInsertId(),
-    'name' => $name,
-    'email' => $email,
-    'role' => ($role === 'admin' ? 'admin' : 'user'),
+    'id'      => (int)$pdo->lastInsertId(),
+    'name'    => $name,
+    'email'   => $email,
+    'role'    => $role,
+    'screens' => $screens,
   ]
 ]);
