@@ -1,0 +1,349 @@
+// server.js — VP Proposta Comercial (Node.js, substitui PHP)
+import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { createClient } from '@supabase/supabase-js';
+import jwt from 'jsonwebtoken';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// ── Supabase (Propostas) ─────────────────────────────────────────────
+const SB_URL  = process.env.SB_URL  || 'https://wfwraicrwazjblyvtzfu.supabase.co';
+const SB_SVC  = process.env.SB_SVC  || '';
+const supabase = createClient(SB_URL, SB_SVC, { auth: { persistSession: false } });
+
+// ── Supabase Central (SSO + activity_logs) ───────────────────────────
+const SB_CENTRAL_URL  = process.env.SB_CENTRAL_URL  || 'https://ubdkoqxfwcraftesgmbw.supabase.co';
+const SB_CENTRAL_ANON = process.env.SB_CENTRAL_ANON || '';
+
+// ── JWT ──────────────────────────────────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || 'vp-propostas-secret-2026';
+
+// ── Email (PIN login) ─────────────────────────────────────────────────
+const EMAIL_HOST = process.env.EMAIL_HOST || '';
+const EMAIL_PORT = parseInt(process.env.EMAIL_PORT || '587');
+const EMAIL_USER = process.env.EMAIL_USER || '';
+const EMAIL_PASS = process.env.EMAIL_PASS || '';
+
+// PIN temporário em memória (TTL 10 min) — sem dependência de banco
+const pinStore = new Map(); // email → { pin, expires }
+
+// ── CORS ─────────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, PUT, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+});
+
+app.use(express.json({ limit: '10mb' }));
+
+// ── Helpers ───────────────────────────────────────────────────────────
+function requireToken(req, res, next) {
+    const auth = req.headers.authorization || '';
+    if (!auth.startsWith('Bearer ')) return res.status(401).json({ ok: false, error: 'Não autenticado' });
+    try {
+        req.user = jwt.verify(auth.slice(7), JWT_SECRET);
+        next();
+    } catch {
+        return res.status(401).json({ ok: false, error: 'Token inválido ou expirado' });
+    }
+}
+
+function makeToken(user) {
+    return jwt.sign(user, JWT_SECRET, { expiresIn: '8h' });
+}
+
+async function validateSsoToken(sso_token) {
+    const r = await fetch(`${SB_CENTRAL_URL}/auth/v1/user`, {
+        headers: { 'Authorization': `Bearer ${sso_token}`, 'apikey': SB_CENTRAL_ANON }
+    });
+    if (!r.ok) return null;
+    return r.json();
+}
+
+async function findOrCreatePerfil(email, nome) {
+    const { data: perfil } = await supabase.from('perfis').select('id, nome, email, nivel').eq('email', email).maybeSingle();
+    if (perfil) return perfil;
+
+    const { data: novo } = await supabase.from('perfis').insert({
+        email, nome: nome || email, nivel: 'Colaborador'
+    }).select().single();
+    return novo;
+}
+
+// ── AUTH SSO ─────────────────────────────────────────────────────────
+// GET  /api/auth_sso.php?sso_token=...
+app.get('/api/auth_sso.php', async (req, res) => {
+    const sso_token = req.query.sso_token || '';
+    if (!sso_token) return res.status(400).json({ error: 'sso_token ausente' });
+
+    const central = await validateSsoToken(sso_token);
+    if (!central?.email) return res.status(401).json({ error: 'Token SSO inválido' });
+
+    const perfil = await findOrCreatePerfil(
+        central.email,
+        central.user_metadata?.name || central.email
+    );
+    if (!perfil) return res.status(500).json({ error: 'Erro ao buscar usuário' });
+
+    const role = ['Administrador', 'Gestor'].includes(perfil.nivel) ? 'admin' : 'user';
+    const token = makeToken({ sb_uuid: perfil.id, name: perfil.nome, email: perfil.email, role });
+
+    return res.json({ token, user: { id: perfil.id, name: perfil.nome, email: perfil.email, role } });
+});
+
+// ── AUTH LOGIN (email → envia PIN) ───────────────────────────────────
+app.post('/api/auth_login.php', async (req, res) => {
+    const email = (req.body.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ ok: false, error: 'Email obrigatório' });
+
+    const { data: perfil } = await supabase.from('perfis').select('id, nome, ativo').eq('email', email).maybeSingle();
+    if (!perfil) return res.status(404).json({ ok: false, error: 'Usuário não encontrado' });
+    if (perfil.ativo === false) return res.status(403).json({ ok: false, error: 'Usuário inativo' });
+
+    const pin = Math.floor(100000 + Math.random() * 900000).toString();
+    pinStore.set(email, { pin, expires: Date.now() + 10 * 60 * 1000 });
+
+    // Enviar PIN por email
+    try {
+        const transporter = nodemailer.createTransport({
+            host: EMAIL_HOST, port: EMAIL_PORT,
+            auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+        });
+        await transporter.sendMail({
+            from: `"VP Sistema" <${EMAIL_USER}>`,
+            to: email,
+            subject: 'Seu PIN de acesso — VP Propostas',
+            html: `<p>Olá ${perfil.nome},</p><p>Seu PIN: <strong style="font-size:24px">${pin}</strong></p><p>Válido por 10 minutos.</p>`
+        });
+    } catch (e) {
+        console.error('Email error:', e.message);
+    }
+
+    // challenge_id = hash do email (compatível com formato antigo)
+    const challenge_id = parseInt(crypto.createHash('sha256').update(email).digest('hex').slice(0, 8), 16);
+    return res.json({ ok: true, challenge_id, message: 'PIN enviado para o seu email' });
+});
+
+// ── AUTH VERIFY PIN ──────────────────────────────────────────────────
+app.post('/api/auth_verify_pin.php', async (req, res) => {
+    const { challenge_id, pin, email: emailParam } = req.body;
+    if (!pin) return res.status(400).json({ ok: false, error: 'PIN obrigatório' });
+
+    // Encontrar email pelo challenge_id ou pelo email fornecido
+    let foundEmail = emailParam?.trim().toLowerCase() || null;
+    if (!foundEmail) {
+        for (const [e, v] of pinStore.entries()) {
+            const id = parseInt(crypto.createHash('sha256').update(e).digest('hex').slice(0, 8), 16);
+            if (id === challenge_id) { foundEmail = e; break; }
+        }
+    }
+    if (!foundEmail) return res.status(401).json({ ok: false, error: 'Sessão inválida' });
+
+    const stored = pinStore.get(foundEmail);
+    if (!stored) return res.status(401).json({ ok: false, error: 'PIN não encontrado ou expirado' });
+    if (Date.now() > stored.expires) { pinStore.delete(foundEmail); return res.status(401).json({ ok: false, error: 'PIN expirado' }); }
+    if (stored.pin !== pin.trim()) return res.status(401).json({ ok: false, error: 'PIN incorreto' });
+
+    pinStore.delete(foundEmail);
+
+    const perfil = await findOrCreatePerfil(foundEmail, foundEmail);
+    const role = ['Administrador', 'Gestor'].includes(perfil.nivel) ? 'admin' : 'user';
+    const token = makeToken({ sb_uuid: perfil.id, name: perfil.nome, email: perfil.email, role });
+
+    return res.json({ ok: true, token, user: { id: perfil.id, name: perfil.nome, email: perfil.email, role } });
+});
+
+// ── PROPOSALS LIST ────────────────────────────────────────────────────
+app.post('/api/proposals_list.php', requireToken, async (req, res) => {
+    const { sb_uuid, role } = req.user;
+
+    let query = supabase.from('propostas').select(
+        'id, numero, titulo, status, valor_total, condicao_pagamento, prazo_entrega, criado_em, aprovada_em, won_number, won_editable, data_json, vendedor_id, cliente_id, clientes(razao_social), perfis(nome, email)'
+    ).order('criado_em', { ascending: false });
+
+    if (role !== 'admin') query = query.eq('vendedor_id', sb_uuid);
+
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao buscar propostas' });
+
+    const items = (data || []).map(p => ({
+        id:          p.id,
+        number:      p.numero  || '',
+        name:        p.titulo  || '',
+        status:      p.status  || '',
+        valor:       p.valor_total  || 0,
+        cliente:     p.clientes?.razao_social || '',
+        vendedor:    p.perfis?.nome  || '',
+        savedAt:     p.criado_em || '',
+        isWon:       p.status === 'aprovada',
+        wonNumber:   p.won_number  || null,
+        aprovadaEm:  p.aprovada_em || null,
+        isEditableByStaff: p.won_editable || false,
+        data:        p.data_json || null,
+    }));
+
+    return res.json({ ok: true, items });
+});
+
+// ── PROPOSALS CREATE / UPDATE ─────────────────────────────────────────
+app.post('/api/proposals_create.php', requireToken, async (req, res) => {
+    const { sb_uuid } = req.user;
+    const { name, data, id } = req.body;
+    if (!name) return res.status(400).json({ ok: false, error: 'Nome obrigatório' });
+
+    // Resolver cliente
+    const client_name = (data?.client?.name || name).trim();
+    let cliente_id = null;
+    const { data: clientes } = await supabase.from('clientes').select('id').ilike('razao_social', client_name).limit(1);
+    if (clientes?.length) {
+        cliente_id = clientes[0].id;
+    } else {
+        const { data: novo } = await supabase.from('clientes').insert({
+            razao_social: client_name,
+            email:    data?.client?.email    || null,
+            telefone: data?.client?.phone    || null,
+            cidade:   data?.client?.city     || null,
+            estado:   data?.client?.state    || null,
+            criado_por: sb_uuid,
+        }).select('id').single();
+        cliente_id = novo?.id;
+    }
+    if (!cliente_id) return res.status(500).json({ ok: false, error: 'Erro ao identificar cliente' });
+
+    // Calcular valor total
+    const units = data?.elevatorUnits || data?.escalatorUnits || data?.walkwayUnits || [];
+    let valor_total = 0;
+    for (const u of (Array.isArray(units) ? units : [])) {
+        const qty = parseFloat(u.quantity || u.qty || 1);
+        const price = parseFloat(String(u.unitPrice || u.price || u.value || 0).replace(/[R$\s.]/g, '').replace(',', '.')) || 0;
+        valor_total += qty * price;
+    }
+
+    const prop_body = {
+        cliente_id,
+        vendedor_id:         sb_uuid,
+        titulo:              name,
+        status:              'enviada',
+        data_json:           data || null,
+        condicao_pagamento:  (data?.financials?.paymentTerms || '').slice(0, 255) || null,
+        prazo_entrega:       (data?.elevatorDeliveryTimeframe || '').slice(0, 255) || null,
+        valor_total:         valor_total || 0,
+    };
+
+    let prop_id;
+    if (id) {
+        await supabase.from('propostas').update({ ...prop_body, atualizado_em: new Date().toISOString() }).eq('id', id);
+        prop_id = id;
+    } else {
+        const { data: novo } = await supabase.from('propostas').insert(prop_body).select('id').single();
+        prop_id = novo?.id;
+    }
+    if (!prop_id) return res.status(500).json({ ok: false, error: 'Erro ao salvar proposta' });
+
+    return res.json({ ok: true, id: prop_id });
+});
+
+// ── PROPOSALS DELETE ──────────────────────────────────────────────────
+app.post('/api/proposals_delete.php', requireToken, async (req, res) => {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ ok: false, error: 'ID obrigatório' });
+    const { error } = await supabase.from('propostas').delete().eq('id', id);
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao deletar' });
+    return res.json({ ok: true });
+});
+
+// ── PROPOSALS WON LIST ────────────────────────────────────────────────
+app.get('/api/proposals_won_list.php', requireToken, async (req, res) => {
+    const { sb_uuid, role } = req.user;
+    let query = supabase.from('propostas').select(
+        'id, numero, titulo, status, valor_total, criado_em, aprovada_em, won_number, won_editable, data_json, vendedor_id, clientes(razao_social), perfis(nome)'
+    ).eq('status', 'aprovada').order('aprovada_em', { ascending: false });
+
+    if (role !== 'admin') query = query.eq('vendedor_id', sb_uuid);
+
+    const { data, error } = await query;
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao buscar propostas ganhas' });
+
+    const items = (data || []).map(p => ({
+        id: p.id, number: p.numero || '', name: p.titulo || '',
+        status: p.status, valor: p.valor_total || 0,
+        cliente: p.clientes?.razao_social || '', vendedor: p.perfis?.nome || '',
+        savedAt: p.criado_em || '', isWon: true,
+        wonNumber: p.won_number || null, wonAt: p.aprovada_em || null,
+        isEditableByStaff: p.won_editable || false,
+        data: p.data_json || null,
+    }));
+    return res.json({ ok: true, items });
+});
+
+// ── PROPOSALS MARK WON ────────────────────────────────────────────────
+app.post('/api/proposals_mark_won.php', requireToken, async (req, res) => {
+    const { id, won_number } = req.body;
+    if (!id) return res.status(400).json({ ok: false, error: 'ID obrigatório' });
+    const { error } = await supabase.from('propostas').update({
+        status: 'aprovada', won_number: won_number || null,
+        aprovada_em: new Date().toISOString()
+    }).eq('id', id);
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao marcar como ganha' });
+    return res.json({ ok: true });
+});
+
+// ── PROPOSALS WON TOGGLE EDIT ─────────────────────────────────────────
+app.post('/api/proposals_won_toggle_edit.php', requireToken, async (req, res) => {
+    const { id, editable } = req.body;
+    if (!id) return res.status(400).json({ ok: false, error: 'ID obrigatório' });
+    const { error } = await supabase.from('propostas').update({ won_editable: !!editable }).eq('id', id);
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao atualizar' });
+    return res.json({ ok: true, editable: !!editable });
+});
+
+// ── USERS LIST ────────────────────────────────────────────────────────
+app.get('/api/users_list.php', requireToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Sem permissão' });
+    const { data, error } = await supabase.from('perfis').select('id, nome, email, nivel, ativo').order('nome');
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao listar usuários' });
+    const users = (data || []).map(u => ({ id: u.id, name: u.nome, email: u.email, role: u.nivel === 'Administrador' ? 'admin' : 'user', is_active: u.ativo !== false }));
+    return res.json({ ok: true, users });
+});
+
+// ── USERS CREATE ──────────────────────────────────────────────────────
+app.post('/api/users_create.php', requireToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Sem permissão' });
+    const { name, email, role } = req.body;
+    if (!email) return res.status(400).json({ ok: false, error: 'Email obrigatório' });
+    const nivel = role === 'admin' ? 'Administrador' : 'Colaborador';
+    const { data, error } = await supabase.from('perfis').insert({ nome: name, email: email.toLowerCase(), nivel }).select().single();
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao criar usuário' });
+    return res.json({ ok: true, user: data });
+});
+
+// ── PROPOSALS HISTORY (stub) ──────────────────────────────────────────
+app.post('/api/proposals_history.php', requireToken, async (req, res) => {
+    return res.json({ ok: true, history: [] });
+});
+
+// ── AUDIT LOGS ────────────────────────────────────────────────────────
+app.get('/api/audit_logs_list.php', requireToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Sem permissão' });
+    return res.json({ ok: true, logs: [], total: 0 });
+});
+
+// ── AUTH PING ─────────────────────────────────────────────────────────
+app.get('/api/auth_ping.php', requireToken, (req, res) => {
+    return res.json({ ok: true, user: req.user });
+});
+
+// ── STATIC FILES ──────────────────────────────────────────────────────
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.listen(PORT, () => console.log(`VP Propostas rodando na porta ${PORT}`));

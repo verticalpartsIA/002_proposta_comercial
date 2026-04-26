@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- TODO: Set the document title to the name of your application -->
+    <title>Proposta VerticalParts</title>
+    <meta name="description" content="Lovable Generated Project" />
+    <meta name="author" content="Lovable" />
+
+    <!-- TODO: Update og:title to match your application name -->
+    <meta property="og:title" content="Proposta VerticalParts" />
+    <meta property="og:description" content="Lovable Generated Project" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@Lovable" />
+    <meta name="twitter:image" content="https://lovable.dev/opengraph-image-p98pqg.png" />
+    <link rel="stylesheet" crossorigin href="/assets/index-iAHJCKEV.css">
+    <!-- SSO bootstrap: carrega o React apenas após resolver autenticação -->
+    <script>
+    (function () {
+      function loadApp() {
+        var s = document.createElement('script');
+        s.type = 'module';
+        s.crossOrigin = '';
+        s.src = '/assets/index-BafzBFi2.js';
+        document.head.appendChild(s);
+      }
+
+      function clearSession() {
+        localStorage.removeItem('token');
+        localStorage.removeItem('auth_user');
+      }
+
+      var p = new URLSearchParams(window.location.search);
+      var sso = p.get('sso_token');
+
+      if (sso) {
+        console.log('[SSO] token recebido, trocando...');
+        window.history.replaceState({}, '', window.location.pathname);
+        fetch('/api/auth_sso.php?sso_token=' + encodeURIComponent(sso))
+          .then(function (r) {
+            console.log('[SSO] auth_sso.php status:', r.status);
+            return r.json();
+          })
+          .then(function (d) {
+            console.log('[SSO] resposta:', JSON.stringify(d));
+            if (d.token) {
+              localStorage.setItem('token', d.token);
+              if (d.user) localStorage.setItem('auth_user', JSON.stringify(d.user));
+              console.log('[SSO] auth_user salvo:', localStorage.getItem('auth_user'));
+              loadApp();
+            } else {
+              console.warn('[SSO] falhou, redirecionando para vpsistema.com');
+              clearSession();
+              window.location.replace('https://vpsistema.com');
+            }
+          })
+          .catch(function (err) {
+            console.error('[SSO] erro de rede:', err);
+            clearSession();
+            window.location.replace('https://vpsistema.com');
+          });
+        return;
+      }
+
+      var token = localStorage.getItem('token');
+      if (!token) {
+        window.location.replace('https://vpsistema.com');
+        return;
+      }
+
+      // Tem token salvo → validar com o servidor antes de carregar o React
+      fetch('/api/auth_ping.php', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      })
+        .then(function (r) {
+          if (r.ok) {
+            loadApp();
+          } else {
+            clearSession();
+            window.location.replace('https://vpsistema.com');
+          }
+        })
+        .catch(function () {
+          // Falha de rede — carrega mesmo assim para não bloquear
+          loadApp();
+        });
+    })();
+    </script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
