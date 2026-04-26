@@ -192,48 +192,119 @@ app.post('/api/proposals_list.php', requireToken, async (req, res) => {
     return res.json({ ok: true, items });
 });
 
+// ── VENDEDORES LIST (para dropdown no formulário) ─────────────────────
+app.get('/api/vendedores.php', requireToken, async (req, res) => {
+    const { data, error } = await supabase
+        .from('perfis')
+        .select('id, nome, email')
+        .eq('ativo', true)
+        .order('nome');
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao listar vendedores' });
+    return res.json({ ok: true, vendedores: data || [] });
+});
+
+// ── PROPOSALS REASSIGN VENDEDOR (admin) ───────────────────────────────
+app.post('/api/proposals_reassign.php', requireToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Sem permissão' });
+    const { id, vendedor_id } = req.body;
+    if (!id || !vendedor_id) return res.status(400).json({ ok: false, error: 'id e vendedor_id obrigatórios' });
+    const { error } = await supabase.from('propostas').update({ vendedor_id, atualizado_em: new Date().toISOString() }).eq('id', id);
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao reatribuir' });
+    return res.json({ ok: true });
+});
+
+// ── PROPOSALS RANKING (dashboard CEO) ────────────────────────────────
+app.get('/api/ranking.php', requireToken, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ ok: false, error: 'Sem permissão' });
+    const { data, error } = await supabase
+        .from('propostas')
+        .select('vendedor_id, valor_total, status, perfis(nome, email)');
+    if (error) return res.status(500).json({ ok: false, error: 'Erro ao buscar ranking' });
+
+    const ranking = {};
+    for (const p of (data || [])) {
+        const uid = p.vendedor_id;
+        if (!uid) continue;
+        if (!ranking[uid]) {
+            ranking[uid] = { vendedor_id: uid, nome: p.perfis?.nome || uid, email: p.perfis?.email || '', total: 0, ganhas: 0, valor: 0 };
+        }
+        ranking[uid].total++;
+        if (p.status === 'aprovada') { ranking[uid].ganhas++; ranking[uid].valor += parseFloat(p.valor_total || 0); }
+    }
+    const lista = Object.values(ranking).sort((a, b) => b.total - a.total);
+    return res.json({ ok: true, ranking: lista });
+});
+
 // ── PROPOSALS CREATE / UPDATE ─────────────────────────────────────────
 app.post('/api/proposals_create.php', requireToken, async (req, res) => {
-    const { sb_uuid } = req.user;
-    const { name, data, id } = req.body;
+    const { sb_uuid, role } = req.user;
+    const { name, data, id, vendedor_id: bodyVendedorId } = req.body;
     if (!name) return res.status(400).json({ ok: false, error: 'Nome obrigatório' });
 
-    // Resolver cliente
-    const client_name = (data?.client?.name || name).trim();
-    let cliente_id = null;
-    const { data: clientes } = await supabase.from('clientes').select('id').ilike('razao_social', client_name).limit(1);
-    if (clientes?.length) {
-        cliente_id = clientes[0].id;
-    } else {
-        const { data: novo } = await supabase.from('clientes').insert({
-            razao_social: client_name,
-            email:    data?.client?.email    || null,
-            telefone: data?.client?.phone    || null,
-            cidade:   data?.client?.city     || null,
-            estado:   data?.client?.state    || null,
-            criado_por: sb_uuid,
-        }).select('id').single();
-        cliente_id = novo?.id;
-    }
-    if (!cliente_id) return res.status(500).json({ ok: false, error: 'Erro ao identificar cliente' });
+    // Resolver vendedor_id:
+    // 1) Admin pode forçar via body.vendedor_id
+    // 2) Caso contrário, tenta pelo nome do vendedor no data.company.sellerName
+    // 3) Fallback: usuário logado
+    let vendedor_id = sb_uuid;
 
-    // Calcular valor total
-    const units = data?.elevatorUnits || data?.escalatorUnits || data?.walkwayUnits || [];
+    if (bodyVendedorId && role === 'admin') {
+        vendedor_id = bodyVendedorId;
+    } else if (data?.company?.sellerName) {
+        const sellerName = data.company.sellerName.trim();
+        const { data: perfil } = await supabase.from('perfis').select('id').ilike('nome', sellerName).limit(1);
+        if (perfil?.length) vendedor_id = perfil[0].id;
+    }
+
+    // Resolver cliente
+    const client_name = (
+        data?.elevatorClient?.name ||
+        data?.escalatorClient?.name ||
+        data?.walkwayClient?.name   ||
+        data?.client?.name          ||
+        name
+    ).trim();
+
+    let cliente_id = null;
+    if (client_name) {
+        const { data: clientes } = await supabase.from('clientes').select('id').ilike('razao_social', client_name).limit(1);
+        if (clientes?.length) {
+            cliente_id = clientes[0].id;
+        } else {
+            const { data: novo } = await supabase.from('clientes').insert({
+                razao_social: client_name,
+                email:    data?.client?.email    || data?.elevatorClient?.email    || null,
+                telefone: data?.client?.phone    || data?.elevatorClient?.phone    || null,
+                cidade:   data?.client?.city     || data?.elevatorClient?.city     || null,
+                estado:   data?.client?.state    || data?.elevatorClient?.state    || null,
+                criado_por: sb_uuid,
+            }).select('id').single();
+            cliente_id = novo?.id;
+        }
+    }
+
+    // Calcular valor total (elevadores, escadas, esteiras)
+    const units = [
+        ...(Array.isArray(data?.elevatorUnits)  ? data.elevatorUnits  : []),
+        ...(Array.isArray(data?.escalatorUnits) ? data.escalatorUnits : []),
+        ...(Array.isArray(data?.walkwayUnits)   ? data.walkwayUnits   : []),
+    ];
     let valor_total = 0;
-    for (const u of (Array.isArray(units) ? units : [])) {
-        const qty = parseFloat(u.quantity || u.qty || 1);
+    for (const u of units) {
+        const qty   = parseFloat(u.quantity || u.qty || 1) || 1;
         const price = parseFloat(String(u.unitPrice || u.price || u.value || 0).replace(/[R$\s.]/g, '').replace(',', '.')) || 0;
         valor_total += qty * price;
     }
+    // Fallback: specs.price para proposta simples
+    if (!valor_total && data?.specs?.price) valor_total = parseFloat(data.specs.price) || 0;
 
     const prop_body = {
-        cliente_id,
-        vendedor_id:         sb_uuid,
+        cliente_id:          cliente_id || null,
+        vendedor_id,
         titulo:              name,
         status:              'enviada',
         data_json:           data || null,
-        condicao_pagamento:  (data?.financials?.paymentTerms || '').slice(0, 255) || null,
-        prazo_entrega:       (data?.elevatorDeliveryTimeframe || '').slice(0, 255) || null,
+        condicao_pagamento:  (data?.financials?.paymentTerms || data?.elevatorPaymentMethod || '').slice(0, 255) || null,
+        prazo_entrega:       (data?.elevatorDeliveryTimeframe || data?.terms?.deliveryTime || '').slice(0, 255) || null,
         valor_total:         valor_total || 0,
     };
 
