@@ -3,9 +3,13 @@
 .env
 db.php
 config.php
-api_supabase/config.php
-vpsistema.com/public_html/api/db.php
-vpsistema.com/public_html/api/config.php
+
+# Código legado MySQL/PHP (removido — tudo em Supabase/Node.js)
+api_supabase/
+vpsistema.com/
+
+# Script de migração one-shot (já executado)
+migrate_mysql.mjs
 
 # Dependências
 vendor/
