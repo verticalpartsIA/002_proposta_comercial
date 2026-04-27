@@ -77,6 +77,28 @@ async function findOrCreatePerfil(email, nome) {
     return novo;
 }
 
+// ── HEALTH CHECK (diagnóstico de env vars + Supabase) ────────────────
+app.get('/api/health', async (req, res) => {
+    const checks = {
+        SB_URL: !!SB_URL,
+        SB_SVC_set: !!SB_SVC,
+        SB_SVC_length: SB_SVC?.length || 0,
+        SB_CENTRAL_URL: !!SB_CENTRAL_URL,
+        SB_CENTRAL_ANON_set: !!SB_CENTRAL_ANON,
+        JWT_SECRET_default: JWT_SECRET === 'vp-propostas-secret-2026',
+    };
+    try {
+        const { count, error } = await supabase.from('propostas').select('*', { count: 'exact', head: true });
+        checks.supabase_query_ok = !error;
+        checks.supabase_propostas_count = count;
+        if (error) checks.supabase_error = error.message;
+    } catch (e) {
+        checks.supabase_query_ok = false;
+        checks.supabase_error = e.message;
+    }
+    return res.json(checks);
+});
+
 // ── AUTH SSO ─────────────────────────────────────────────────────────
 // GET  /api/auth_sso.php?sso_token=...
 app.get('/api/auth_sso.php', async (req, res) => {
@@ -164,14 +186,29 @@ app.post('/api/auth_verify_pin.php', async (req, res) => {
 app.post('/api/proposals_list.php', requireToken, async (req, res) => {
     const { sb_uuid, role } = req.user;
 
+    // Tenta com JOIN primeiro
     let query = supabase.from('propostas').select(
         'id, numero, titulo, status, valor_total, condicao_pagamento, prazo_entrega, criado_em, aprovada_em, won_number, won_editable, data_json, vendedor_id, cliente_id, clientes(razao_social), perfis(nome, email)'
     ).order('criado_em', { ascending: false });
 
     if (role !== 'admin') query = query.eq('vendedor_id', sb_uuid);
 
-    const { data, error } = await query;
-    if (error) return res.status(500).json({ ok: false, error: 'Erro ao buscar propostas' });
+    let { data, error } = await query;
+
+    // Fallback: se JOIN falhar, tenta sem JOIN
+    if (error) {
+        console.error('[proposals_list] JOIN falhou:', error.message);
+        let fallback = supabase.from('propostas').select(
+            'id, numero, titulo, status, valor_total, condicao_pagamento, prazo_entrega, criado_em, aprovada_em, won_number, won_editable, data_json, vendedor_id, cliente_id'
+        ).order('criado_em', { ascending: false });
+        if (role !== 'admin') fallback = fallback.eq('vendedor_id', sb_uuid);
+        const r = await fallback;
+        if (r.error) {
+            console.error('[proposals_list] fallback falhou:', r.error.message);
+            return res.status(500).json({ ok: false, error: `Erro ao buscar propostas: ${r.error.message}` });
+        }
+        data = r.data;
+    }
 
     const items = (data || []).map(p => ({
         id:          p.id,
@@ -266,11 +303,12 @@ app.post('/api/proposals_create.php', requireToken, async (req, res) => {
 
     let cliente_id = null;
     if (client_name) {
-        const { data: clientes } = await supabase.from('clientes').select('id').ilike('razao_social', client_name).limit(1);
+        const { data: clientes, error: errClienteSel } = await supabase.from('clientes').select('id').ilike('razao_social', client_name).limit(1);
+        if (errClienteSel) console.error('[proposals_create] busca cliente falhou:', errClienteSel.message);
         if (clientes?.length) {
             cliente_id = clientes[0].id;
         } else {
-            const { data: novo } = await supabase.from('clientes').insert({
+            const { data: novo, error: errClienteIns } = await supabase.from('clientes').insert({
                 razao_social: client_name,
                 email:    data?.client?.email    || data?.elevatorClient?.email    || null,
                 telefone: data?.client?.phone    || data?.elevatorClient?.phone    || null,
@@ -278,7 +316,8 @@ app.post('/api/proposals_create.php', requireToken, async (req, res) => {
                 estado:   data?.client?.state    || data?.elevatorClient?.state    || null,
                 criado_por: sb_uuid,
             }).select('id').single();
-            cliente_id = novo?.id;
+            if (errClienteIns) console.error('[proposals_create] insert cliente falhou:', errClienteIns.message);
+            cliente_id = novo?.id || null;
         }
     }
 
@@ -310,13 +349,21 @@ app.post('/api/proposals_create.php', requireToken, async (req, res) => {
 
     let prop_id;
     if (id) {
-        await supabase.from('propostas').update({ ...prop_body, atualizado_em: new Date().toISOString() }).eq('id', id);
+        const { error: errUpd } = await supabase.from('propostas').update({ ...prop_body, atualizado_em: new Date().toISOString() }).eq('id', id);
+        if (errUpd) {
+            console.error('[proposals_create] update propostas falhou:', errUpd.message);
+            return res.status(500).json({ ok: false, error: `Erro ao atualizar proposta: ${errUpd.message}` });
+        }
         prop_id = id;
     } else {
-        const { data: novo } = await supabase.from('propostas').insert(prop_body).select('id').single();
+        const { data: novo, error: errIns } = await supabase.from('propostas').insert(prop_body).select('id').single();
+        if (errIns) {
+            console.error('[proposals_create] insert propostas falhou:', errIns.message, 'body:', JSON.stringify(prop_body));
+            return res.status(500).json({ ok: false, error: `Erro ao salvar proposta: ${errIns.message}` });
+        }
         prop_id = novo?.id;
     }
-    if (!prop_id) return res.status(500).json({ ok: false, error: 'Erro ao salvar proposta' });
+    if (!prop_id) return res.status(500).json({ ok: false, error: 'Erro ao salvar proposta: id não retornado' });
 
     return res.json({ ok: true, id: prop_id });
 });
