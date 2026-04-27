@@ -210,21 +210,28 @@ app.post('/api/proposals_list.php', requireToken, async (req, res) => {
         data = r.data;
     }
 
-    const items = (data || []).map(p => ({
-        id:          p.id,
-        number:      p.numero  || '',
-        name:        p.titulo  || '',
-        status:      p.status  || '',
-        valor:       p.valor_total  || 0,
-        cliente:     p.clientes?.razao_social || '',
-        vendedor:    p.perfis?.nome  || '',
-        savedAt:     p.criado_em || '',
-        isWon:       p.status === 'aprovada',
-        wonNumber:   p.won_number  || null,
-        aprovadaEm:  p.aprovada_em || null,
-        isEditableByStaff: p.won_editable || false,
-        data:        p.data_json || null,
-    }));
+    const items = (data || []).map(p => {
+        // Normaliza data_json para nunca ser null e sempre ter specs (frontend assume estrutura)
+        const d = p.data_json && typeof p.data_json === 'object' ? p.data_json : {};
+        if (!d.specs) d.specs = {};
+        if (!d.client) d.client = {};
+        if (!d.company) d.company = {};
+        return {
+            id:          p.id,
+            number:      p.numero  || '',
+            name:        p.titulo  || '',
+            status:      p.status  || '',
+            valor:       p.valor_total  || 0,
+            cliente:     p.clientes?.razao_social || '',
+            vendedor:    p.perfis?.nome  || '',
+            savedAt:     p.criado_em || '',
+            isWon:       p.status === 'aprovada',
+            wonNumber:   p.won_number  || null,
+            aprovadaEm:  p.aprovada_em || null,
+            isEditableByStaff: p.won_editable || false,
+            data:        d,
+        };
+    });
 
     return res.json({ ok: true, items });
 });
@@ -389,15 +396,21 @@ app.get('/api/proposals_won_list.php', requireToken, async (req, res) => {
     const { data, error } = await query;
     if (error) return res.status(500).json({ ok: false, error: 'Erro ao buscar propostas ganhas' });
 
-    const items = (data || []).map(p => ({
-        id: p.id, number: p.numero || '', name: p.titulo || '',
-        status: p.status, valor: p.valor_total || 0,
-        cliente: p.clientes?.razao_social || '', vendedor: p.perfis?.nome || '',
-        savedAt: p.criado_em || '', isWon: true,
-        wonNumber: p.won_number || null, wonAt: p.aprovada_em || null,
-        isEditableByStaff: p.won_editable || false,
-        data: p.data_json || null,
-    }));
+    const items = (data || []).map(p => {
+        const d = p.data_json && typeof p.data_json === 'object' ? p.data_json : {};
+        if (!d.specs) d.specs = {};
+        if (!d.client) d.client = {};
+        if (!d.company) d.company = {};
+        return {
+            id: p.id, number: p.numero || '', name: p.titulo || '',
+            status: p.status, valor: p.valor_total || 0,
+            cliente: p.clientes?.razao_social || '', vendedor: p.perfis?.nome || '',
+            savedAt: p.criado_em || '', isWon: true,
+            wonNumber: p.won_number || null, wonAt: p.aprovada_em || null,
+            isEditableByStaff: p.won_editable || false,
+            data: d,
+        };
+    });
     return res.json({ ok: true, items });
 });
 
