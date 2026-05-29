@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <rect width="1200" height="500" fill="#0B1220"/>
+  <text x="600" y="50" fill="#FFFFFF" font-size="26" font-weight="700" text-anchor="middle">Correção de 29/05/2026 — endpoints que retornavam HTTP 404</text>
+
+  <!-- ANTES -->
+  <g transform="translate(60,90)">
+    <rect width="520" height="360" rx="18" fill="#1A1020" stroke="#EF4444" stroke-width="2"/>
+    <text x="30" y="46" fill="#EF4444" font-size="22" font-weight="700">✕ ANTES</text>
+    <text x="30" y="86" fill="#FCA5A5" font-size="16">O front-end chamava rotas inexistentes →</text>
+    <text x="30" y="110" fill="#FCA5A5" font-size="16">servidor respondia HTTP 404</text>
+
+    <g fill="#F8FAFC" font-size="15">
+      <rect x="30" y="135" width="460" height="44" rx="8" fill="#2A1418"/>
+      <text x="46" y="163">proposals_update.php — editar proposta ❌</text>
+      <rect x="30" y="187" width="460" height="44" rx="8" fill="#2A1418"/>
+      <text x="46" y="215">contracts/draft.php — salvar minuta ❌</text>
+      <rect x="30" y="239" width="460" height="44" rx="8" fill="#2A1418"/>
+      <text x="46" y="267">contracts/get_draft.php — abrir minuta ❌</text>
+      <rect x="30" y="291" width="460" height="44" rx="8" fill="#2A1418"/>
+      <text x="46" y="319">users_change_password.php — senha ❌</text>
+    </g>
+  </g>
+
+  <!-- seta -->
+  <text x="600" y="280" fill="#7C3AED" font-size="48" font-weight="700" text-anchor="middle">→</text>
+
+  <!-- DEPOIS -->
+  <g transform="translate(620,90)">
+    <rect width="520" height="360" rx="18" fill="#0F1B14" stroke="#22C55E" stroke-width="2"/>
+    <text x="30" y="46" fill="#22C55E" font-size="22" font-weight="700">✓ DEPOIS</text>
+    <text x="30" y="86" fill="#86EFAC" font-size="16">Endpoints implementados no servidor →</text>
+    <text x="30" y="110" fill="#86EFAC" font-size="16">tudo funcionando</text>
+
+    <g fill="#F8FAFC" font-size="15">
+      <rect x="30" y="135" width="460" height="44" rx="8" fill="#10231A"/>
+      <text x="46" y="163">Editar / re-salvar proposta ✅</text>
+      <rect x="30" y="187" width="460" height="44" rx="8" fill="#10231A"/>
+      <text x="46" y="215">Salvar minuta do contrato ✅</text>
+      <rect x="30" y="239" width="460" height="44" rx="8" fill="#10231A"/>
+      <text x="46" y="267">Abrir minuta salva ✅</text>
+      <rect x="30" y="291" width="460" height="44" rx="8" fill="#10231A"/>
+      <text x="46" y="319">Configurações sem erro ✅</text>
+    </g>
+  </g>
+</svg>

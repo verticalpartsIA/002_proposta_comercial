@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F1F5FF"/>
+    </linearGradient>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="8" refY="4" orient="auto">
+      <path d="M0 0 L8 4 L0 8 z" fill="#7C3AED"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="440" fill="#0B1220"/>
+  <text x="600" y="48" fill="#FFFFFF" font-size="26" font-weight="700" text-anchor="middle">Arquitetura do sistema</text>
+
+  <!-- Usuário -->
+  <g transform="translate(60,120)">
+    <rect width="200" height="200" rx="18" fill="url(#card)"/>
+    <circle cx="100" cy="64" r="34" fill="#7C3AED"/>
+    <circle cx="100" cy="54" r="13" fill="#fff"/>
+    <path d="M76 86 a24 18 0 0 1 48 0" fill="#fff"/>
+    <text x="100" y="130" fill="#0B1220" font-size="19" font-weight="700" text-anchor="middle">Usuário</text>
+    <text x="100" y="158" fill="#475569" font-size="14" text-anchor="middle">Navegador</text>
+    <text x="100" y="178" fill="#475569" font-size="14" text-anchor="middle">login SSO / PIN</text>
+  </g>
+
+  <!-- Frontend -->
+  <g transform="translate(360,120)">
+    <rect width="220" height="200" rx="18" fill="url(#card)"/>
+    <rect x="74" y="34" width="72" height="56" rx="8" fill="#2563EB"/>
+    <circle cx="110" cy="62" r="13" fill="#fff"/>
+    <text x="110" y="130" fill="#0B1220" font-size="19" font-weight="700" text-anchor="middle">Front-end React</text>
+    <text x="110" y="158" fill="#475569" font-size="14" text-anchor="middle">Vite (compilado)</text>
+    <text x="110" y="178" fill="#475569" font-size="14" text-anchor="middle">/public/assets</text>
+  </g>
+
+  <!-- Backend -->
+  <g transform="translate(680,120)">
+    <rect width="220" height="200" rx="18" fill="url(#card)"/>
+    <rect x="74" y="34" width="72" height="56" rx="8" fill="#16A34A"/>
+    <text x="110" y="70" fill="#fff" font-size="18" font-weight="700" text-anchor="middle">API</text>
+    <text x="110" y="130" fill="#0B1220" font-size="19" font-weight="700" text-anchor="middle">Back-end Node.js</text>
+    <text x="110" y="158" fill="#475569" font-size="14" text-anchor="middle">Express — server.js</text>
+    <text x="110" y="178" fill="#475569" font-size="14" text-anchor="middle">rotas /api/*.php</text>
+  </g>
+
+  <!-- Supabase -->
+  <g transform="translate(1000,120)">
+    <rect width="140" height="200" rx="18" fill="url(#card)"/>
+    <path d="M70 30 L46 96 h24 l-6 64 40 -84 h-24 z" fill="#3ECF8E"/>
+    <text x="70" y="130" fill="#0B1220" font-size="18" font-weight="700" text-anchor="middle">Supabase</text>
+    <text x="70" y="158" fill="#475569" font-size="13" text-anchor="middle">PostgreSQL</text>
+    <text x="70" y="178" fill="#475569" font-size="13" text-anchor="middle">propostas, minutas</text>
+  </g>
+
+  <!-- arrows -->
+  <line x1="262" y1="220" x2="356" y2="220" stroke="#7C3AED" stroke-width="3" marker-end="url(#arrow)"/>
+  <line x1="582" y1="220" x2="676" y2="220" stroke="#7C3AED" stroke-width="3" marker-end="url(#arrow)"/>
+  <line x1="902" y1="220" x2="996" y2="220" stroke="#7C3AED" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <text x="600" y="400" fill="#B9C2E0" font-size="15" text-anchor="middle">Deploy automático a cada push na branch main (hospedagem Hostinger) — publica em ~30s</text>
+</svg>
