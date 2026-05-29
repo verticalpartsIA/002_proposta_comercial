@@ -279,26 +279,10 @@ app.get('/api/ranking.php', requireToken, async (req, res) => {
     return res.json({ ok: true, ranking: lista });
 });
 
-// ── PROPOSALS CREATE / UPDATE ─────────────────────────────────────────
-app.post('/api/proposals_create.php', requireToken, async (req, res) => {
-    const { sb_uuid, role } = req.user;
-    const { name, data, id, vendedor_id: bodyVendedorId } = req.body;
-    if (!name) return res.status(400).json({ ok: false, error: 'Nome obrigatório' });
-
-    // Resolver vendedor_id:
-    // 1) Admin pode forçar via body.vendedor_id
-    // 2) Caso contrário, tenta pelo nome do vendedor no data.company.sellerName
-    // 3) Fallback: usuário logado
-    let vendedor_id = sb_uuid;
-
-    if (bodyVendedorId && role === 'admin') {
-        vendedor_id = bodyVendedorId;
-    } else if (data?.company?.sellerName) {
-        const sellerName = data.company.sellerName.trim();
-        const { data: perfil } = await supabase.from('perfis').select('id').ilike('nome', sellerName).limit(1);
-        if (perfil?.length) vendedor_id = perfil[0].id;
-    }
-
+// ── Helper: monta os campos da proposta a partir do payload do frontend ──
+// Resolve cliente, valor_total, condição/prazo. Retorna também client_name.
+// vendedor_id é resolvido separadamente (difere entre create e update).
+async function buildPropBody({ name, data, sb_uuid }) {
     // Resolver cliente
     const client_name = (
         data?.elevatorClient?.name ||
@@ -311,7 +295,7 @@ app.post('/api/proposals_create.php', requireToken, async (req, res) => {
     let cliente_id = null;
     if (client_name) {
         const { data: clientes, error: errClienteSel } = await supabase.from('clientes').select('id').ilike('razao_social', client_name).limit(1);
-        if (errClienteSel) console.error('[proposals_create] busca cliente falhou:', errClienteSel.message);
+        if (errClienteSel) console.error('[buildPropBody] busca cliente falhou:', errClienteSel.message);
         if (clientes?.length) {
             cliente_id = clientes[0].id;
         } else {
@@ -323,7 +307,7 @@ app.post('/api/proposals_create.php', requireToken, async (req, res) => {
                 estado:   data?.client?.state    || data?.elevatorClient?.state    || null,
                 criado_por: sb_uuid,
             }).select('id').single();
-            if (errClienteIns) console.error('[proposals_create] insert cliente falhou:', errClienteIns.message);
+            if (errClienteIns) console.error('[buildPropBody] insert cliente falhou:', errClienteIns.message);
             cliente_id = novo?.id || null;
         }
     }
@@ -343,16 +327,36 @@ app.post('/api/proposals_create.php', requireToken, async (req, res) => {
     // Fallback: specs.price para proposta simples
     if (!valor_total && data?.specs?.price) valor_total = parseFloat(data.specs.price) || 0;
 
-    const prop_body = {
+    return {
         cliente_id:          cliente_id || null,
-        vendedor_id,
         titulo:              name,
-        status:              'enviada',
         data_json:           data || null,
         condicao_pagamento:  (data?.financials?.paymentTerms || data?.elevatorPaymentMethod || '').slice(0, 255) || null,
         prazo_entrega:       (data?.elevatorDeliveryTimeframe || data?.terms?.deliveryTime || '').slice(0, 255) || null,
         valor_total:         valor_total || 0,
     };
+}
+
+// ── PROPOSALS CREATE ──────────────────────────────────────────────────
+app.post('/api/proposals_create.php', requireToken, async (req, res) => {
+    const { sb_uuid, role } = req.user;
+    const { name, data, id, vendedor_id: bodyVendedorId } = req.body;
+    if (!name) return res.status(400).json({ ok: false, error: 'Nome obrigatório' });
+
+    // Resolver vendedor_id:
+    // 1) Admin pode forçar via body.vendedor_id
+    // 2) Caso contrário, tenta pelo nome do vendedor no data.company.sellerName
+    // 3) Fallback: usuário logado
+    let vendedor_id = sb_uuid;
+    if (bodyVendedorId && role === 'admin') {
+        vendedor_id = bodyVendedorId;
+    } else if (data?.company?.sellerName) {
+        const sellerName = data.company.sellerName.trim();
+        const { data: perfil } = await supabase.from('perfis').select('id').ilike('nome', sellerName).limit(1);
+        if (perfil?.length) vendedor_id = perfil[0].id;
+    }
+
+    const prop_body = { ...(await buildPropBody({ name, data, sb_uuid })), vendedor_id, status: 'enviada' };
 
     let prop_id;
     if (id) {
@@ -373,6 +377,32 @@ app.post('/api/proposals_create.php', requireToken, async (req, res) => {
     if (!prop_id) return res.status(500).json({ ok: false, error: 'Erro ao salvar proposta: id não retornado' });
 
     return res.json({ ok: true, id: prop_id });
+});
+
+// ── PROPOSALS UPDATE (editar proposta existente) ──────────────────────
+// Frontend: { id, name, data, edit_description }
+// NÃO reatribui o vendedor_id automaticamente (preserva o dono da proposta);
+// apenas um admin pode reatribuir explicitamente via body.vendedor_id.
+app.post('/api/proposals_update.php', requireToken, async (req, res) => {
+    const { sb_uuid, role } = req.user;
+    const { id, name, data, vendedor_id: bodyVendedorId } = req.body;
+    if (!id)   return res.status(400).json({ ok: false, error: 'ID obrigatório' });
+    if (!name) return res.status(400).json({ ok: false, error: 'Nome obrigatório' });
+
+    const update_body = {
+        ...(await buildPropBody({ name, data, sb_uuid })),
+        atualizado_em: new Date().toISOString(),
+    };
+
+    // Só um admin pode reatribuir o vendedor; caso contrário preserva-se o atual.
+    if (bodyVendedorId && role === 'admin') update_body.vendedor_id = bodyVendedorId;
+
+    const { error: errUpd } = await supabase.from('propostas').update(update_body).eq('id', id);
+    if (errUpd) {
+        console.error('[proposals_update] update propostas falhou:', errUpd.message);
+        return res.status(500).json({ ok: false, error: `Erro ao atualizar proposta: ${errUpd.message}` });
+    }
+    return res.json({ ok: true, id });
 });
 
 // ── PROPOSALS DELETE ──────────────────────────────────────────────────
@@ -453,6 +483,47 @@ app.post('/api/users_create.php', requireToken, async (req, res) => {
     const { data, error } = await supabase.from('perfis').insert({ nome: name, email: email.toLowerCase(), nivel }).select().single();
     if (error) return res.status(500).json({ ok: false, error: 'Erro ao criar usuário' });
     return res.json({ ok: true, user: data });
+});
+
+// ── USERS CHANGE PASSWORD ─────────────────────────────────────────────
+// O login deste sistema é por PIN enviado por email (sem senha armazenada).
+// Mantemos o endpoint para não quebrar a tela de Configurações: responde de
+// forma amigável informando que o acesso é por PIN/SSO.
+app.post('/api/users_change_password.php', requireToken, async (req, res) => {
+    return res.json({
+        ok: true,
+        message: 'Este sistema usa login por PIN enviado ao seu email (ou SSO do portal). Não há senha para alterar.',
+    });
+});
+
+// ── CONTRACTS / MINUTA — SALVAR ───────────────────────────────────────
+// Frontend: POST { proposalId: "<numero>_<tipo>", html }  (sem Authorization)
+app.post('/api/contracts/draft.php', async (req, res) => {
+    const { proposalId, html } = req.body || {};
+    if (!proposalId) return res.status(400).json({ ok: false, error: 'proposalId obrigatório' });
+    const { error } = await supabase.from('minutas').upsert({
+        proposal_key: String(proposalId),
+        html: html || '',
+        atualizado_em: new Date().toISOString(),
+    }, { onConflict: 'proposal_key' });
+    if (error) {
+        console.error('[contracts/draft] upsert falhou:', error.message);
+        return res.status(500).json({ ok: false, error: 'Erro ao salvar minuta' });
+    }
+    return res.json({ ok: true });
+});
+
+// ── CONTRACTS / MINUTA — CARREGAR ─────────────────────────────────────
+// Frontend: GET ?proposalId=<numero>_<tipo>  → { html }  (sem Authorization)
+app.get('/api/contracts/get_draft.php', async (req, res) => {
+    const proposalId = req.query.proposalId || '';
+    if (!proposalId) return res.json({ html: null });
+    const { data, error } = await supabase.from('minutas').select('html').eq('proposal_key', String(proposalId)).maybeSingle();
+    if (error) {
+        console.error('[contracts/get_draft] select falhou:', error.message);
+        return res.status(500).json({ ok: false, error: 'Erro ao buscar minuta' });
+    }
+    return res.json({ html: data?.html || null });
 });
 
 // ── PROPOSALS HISTORY (stub) ──────────────────────────────────────────
