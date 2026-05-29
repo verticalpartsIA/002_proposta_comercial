@@ -133,7 +133,43 @@ Os dados de teste criados durante a validação foram removidos do banco.
 
 ---
 
-## 6. Recomendações (não-bloqueantes)
+## 6. Integração com o VP Click (gestor de tarefas) — NOVO em 29/05/2026
+
+A partir de **29/05/2026**, o sistema de Propostas passou a se integrar com o
+**VP Click** (https://vpclick.vpsistema.com — projeto Supabase
+`sfpnjwllcmentoocylow`):
+
+- **Ao criar uma proposta nova**, é criada automaticamente uma **tarefa** na
+  lista **Propostas** (espaço *VP PROPOSTAS* › folder *Propostas Comerciais*,
+  `list_id 44400000-0000-4000-8000-000000000001`), com:
+  - **Responsável:** o **vendedor** da proposta (mapeado por e-mail — a
+    convenção de e-mails é idêntica nos dois bancos);
+  - **Acompanhando:** **Bianca** (Jurídico), **Marcus Braz** e **Guilherme**
+    (Gestores Comerciais);
+  - **Status** "Enviada", **prioridade** "Alta", **prazo** +7 dias.
+- **Ao editar a proposta** ou **marcá-la como ganha**, a tarefa correspondente é
+  **atualizada** (título/valor/status) — ex.: ganhar a proposta move a tarefa
+  para **"Aprovada"**. Mapa: `enviada→Enviada`, `aprovada→Aprovada`,
+  `recusada/cancelada→Recusada`.
+
+**Como funciona (para manutenção):**
+- Código em `server.js`, função `syncPropostaToVpclick(prop_id)` (upsert:
+  cria na 1ª vez, depois atualiza). Chamada em `proposals_create.php`,
+  `proposals_update.php` e `proposals_mark_won.php`.
+- **Idempotente e auto-recuperável:** usa a tabela `vpclick_integration_links`
+  (no VP Click) para ligar a proposta à tarefa e nunca duplicar.
+- **Não-bloqueante:** qualquer falha na integração é registrada em log e **não
+  impede** o salvamento da proposta.
+- **Ativação:** depende da variável de ambiente **`VPCLICK_SB_SVC`** (service
+  role do VP Click) configurada **no app de Propostas na Hostinger**. Sem ela, a
+  integração fica inativa (o resto do sistema funciona normalmente).
+
+> 📄 Há um relatório espelho deste tema no repositório do VP Click:
+> `relatorios/2026_05_29_relatorio.md`.
+
+---
+
+## 7. Recomendações (não-bloqueantes)
 
 1. **Histórico de edições:** o campo `edit_description` é enviado pelo
    front-end mas hoje não é persistido (não há tabela de histórico). Caso seja
