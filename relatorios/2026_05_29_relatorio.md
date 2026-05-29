@@ -135,37 +135,40 @@ Os dados de teste criados durante a validação foram removidos do banco.
 
 ## 6. Integração com o VP Click (gestor de tarefas) — NOVO em 29/05/2026
 
-A partir de **29/05/2026**, o sistema de Propostas passou a se integrar com o
-**VP Click** (https://vpclick.vpsistema.com — projeto Supabase
-`sfpnjwllcmentoocylow`):
+A partir de **29/05/2026**, **toda proposta criada** gera automaticamente uma
+**tarefa no VP Click** (https://vpclick.vpsistema.com), e mudanças de
+**status/título/valor** atualizam essa tarefa.
 
-- **Ao criar uma proposta nova**, é criada automaticamente uma **tarefa** na
-  lista **Propostas** (espaço *VP PROPOSTAS* › folder *Propostas Comerciais*,
-  `list_id 44400000-0000-4000-8000-000000000001`), com:
-  - **Responsável:** o **vendedor** da proposta (mapeado por e-mail — a
-    convenção de e-mails é idêntica nos dois bancos);
-  - **Acompanhando:** **Bianca** (Jurídico), **Marcus Braz** e **Guilherme**
-    (Gestores Comerciais);
-  - **Status** "Enviada", **prioridade** "Alta", **prazo** +7 dias.
-- **Ao editar a proposta** ou **marcá-la como ganha**, a tarefa correspondente é
-  **atualizada** (título/valor/status) — ex.: ganhar a proposta move a tarefa
-  para **"Aprovada"**. Mapa: `enviada→Enviada`, `aprovada→Aprovada`,
-  `recusada/cancelada→Recusada`.
+- **Lista de destino:** espaço *VP PROPOSTAS* › folder *Propostas Comerciais* ›
+  lista **Propostas**.
+- **Responsável:** o **vendedor** da proposta (mapeado por e-mail).
+- **Acompanhando:** **Bianca** (Jurídico), **Marcus Braz** e **Guilherme**
+  (Gestores Comerciais).
+- **Status:** `enviada→Enviada`, `aprovada→Aprovada`, `recusada/cancelada→Recusada`.
 
-**Como funciona (para manutenção):**
-- Código em `server.js`, função `syncPropostaToVpclick(prop_id)` (upsert:
-  cria na 1ª vez, depois atualiza). Chamada em `proposals_create.php`,
-  `proposals_update.php` e `proposals_mark_won.php`.
-- **Idempotente e auto-recuperável:** usa a tabela `vpclick_integration_links`
-  (no VP Click) para ligar a proposta à tarefa e nunca duplicar.
-- **Não-bloqueante:** qualquer falha na integração é registrada em log e **não
-  impede** o salvamento da proposta.
-- **Ativação:** depende da variável de ambiente **`VPCLICK_SB_SVC`** (service
-  role do VP Click) configurada **no app de Propostas na Hostinger**. Sem ela, a
-  integração fica inativa (o resto do sistema funciona normalmente).
+**Arquitetura (importante para manutenção):** a integração **NÃO** fica no
+backend Node deste projeto. Ela usa o **"Hub Central de Integrações" do VP
+Click**:
 
-> 📄 Há um relatório espelho deste tema no repositório do VP Click:
-> `relatorios/2026_05_29_relatorio.md`.
+```
+Propostas (INSERT/UPDATE em propostas)
+  └─▶ TRIGGER notify_vpclick_proposta (neste banco, wfwraicrwazjblyvtzfu)
+        └─▶ pg_net.http_post ──▶ Edge Function handle-integration-event (VP Click)
+              └─▶ cria/atualiza a tarefa + vpclick_integration_links
+```
+
+- **Idempotente:** a tabela `vpclick_integration_links` (no VP Click) liga a
+  proposta à tarefa e evita duplicação.
+- **Não-bloqueante:** o trigger trata erros sem impactar o salvamento.
+- **Não requer variável de ambiente** no app de Propostas (o trigger usa
+  `pg_net` + um secret fixo no header).
+
+> ℹ️ Esta integração já estava desenhada no VP Click mas estava **quebrada**
+> (nunca criou tarefas). Em 29/05/2026 foram corrigidos: o **trigger** (passava
+> `body` como TEXT em vez de JSONB ao `pg_net`) e a **Edge Function** (inseria
+> colunas inexistentes em `tasks` e não preenchia os acompanhantes). O código e
+> o relatório detalhado estão no repositório **vp-click**
+> (`relatorios/2026_05_29_relatorio.md`).
 
 ---
 
