@@ -33,6 +33,15 @@ const VPCLICK_BIANCA    = '55ce8f2d-cd8c-46f6-9703-fc5508638128'; // Bianca (Jur
 const VPCLICK_MARCUS    = 'ed709c0c-f997-4e68-abbb-c25f9886a891'; // Marcus Braz (Gestor Comercial)
 const VPCLICK_GUILHERME = 'f97faace-1e76-42ef-856d-582abd34a6b7'; // Guilherme Garcia (Gestor Comercial)
 const VPCLICK_FOLLOWERS = [VPCLICK_BIANCA, VPCLICK_MARCUS, VPCLICK_GUILHERME];
+// Status da proposta (Propostas) → label de status da lista "Propostas" no VP Click
+const VPCLICK_STATUS_MAP = {
+    rascunho:  'Rascunho',
+    enviada:   'Enviada',
+    aprovada:  'Aprovada',
+    recusada:  'Recusada',
+    cancelada: 'Recusada',
+};
+const vpclickStatusFor = (s) => VPCLICK_STATUS_MAP[(s || '').toLowerCase()] || 'Enviada';
 
 // ── JWT ──────────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET || 'vp-propostas-secret-2026';
@@ -91,28 +100,56 @@ async function findOrCreatePerfil(email, nome) {
     return novo;
 }
 
-// ── Integração: cria uma tarefa no VP Click para a proposta criada ────
+// ── Integração VP Click: cria/atualiza a tarefa de uma proposta ───────
 // Envolve o vendedor (responsável) + Bianca/Marcus/Guilherme (acompanham).
-// Idempotente (não duplica) e não-bloqueante (erros não quebram o salvar).
+//  • Cria a tarefa na 1ª vez (status conforme a proposta).
+//  • Se já existe (via vpclick_integration_links), ATUALIZA título/descrição/status
+//    — sem mexer nos responsáveis (que podem ter sido ajustados manualmente).
+// Não-bloqueante: erros nunca quebram o fluxo da proposta.
 async function syncPropostaToVpclick(prop_id) {
     if (!vpclick || !prop_id) return;
     try {
         const { data: prop } = await supabase
             .from('propostas')
-            .select('id, numero, titulo, valor_total, vendedor_id, data_json, clientes(razao_social)')
+            .select('id, numero, titulo, status, valor_total, vendedor_id, data_json, clientes(razao_social)')
             .eq('id', prop_id).maybeSingle();
         if (!prop) return;
 
-        // Idempotência: se já existe tarefa para esta proposta, não cria de novo
         const { data: link } = await vpclick.from('vpclick_integration_links')
-            .select('id').eq('source_project', 'propostas').eq('source_record_id', String(prop.id)).maybeSingle();
-        if (link) return;
+            .select('id, vpclick_task_id').eq('source_project', 'propostas').eq('source_record_id', String(prop.id)).maybeSingle();
 
-        // Vendedor (por e-mail) → profile no VP Click
-        let vendedorNome = '', vendedorEmail = '';
+        const cliente = prop.clientes?.razao_social || prop.titulo || 'Cliente';
+        const valor = Number(prop.valor_total || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        const tipo = prop.data_json?.specs?.type || prop.data_json?.proposalType || '';
+        const status = vpclickStatusFor(prop.status);
+        const title = `Proposta Nº ${prop.numero ?? ''} — ${cliente}`.trim();
+        const description = [
+            'Proposta comercial do sistema de Propostas.',
+            '',
+            `• Nº: ${prop.numero ?? '—'}`,
+            `• Cliente: ${cliente}`,
+            tipo ? `• Tipo: ${tipo}` : null,
+            `• Valor: ${valor}`,
+            `• Status: ${status}`,
+            '',
+            'Acompanhamento: Jurídico (Bianca) e Gestores Comerciais (Marcus e Guilherme).',
+            'Abrir sistema: https://propostas.vpsistema.com',
+        ].filter(v => v !== null).join('\n');
+
+        // ── Já existe tarefa → atualiza (título/descrição/status) ──
+        if (link?.vpclick_task_id) {
+            const { error } = await vpclick.from('tasks')
+                .update({ title, description, status })
+                .eq('id', link.vpclick_task_id);
+            if (error) console.error('[vpclick] update task falhou:', error.message);
+            else console.log(`[vpclick] tarefa ${link.vpclick_task_id} atualizada (proposta ${prop.numero} → ${status})`);
+            return;
+        }
+
+        // ── Não existe → cria tarefa + link ──
+        let vendedorEmail = '';
         if (prop.vendedor_id) {
-            const { data: perfil } = await supabase.from('perfis').select('nome, email').eq('id', prop.vendedor_id).maybeSingle();
-            vendedorNome = perfil?.nome || '';
+            const { data: perfil } = await supabase.from('perfis').select('email').eq('id', prop.vendedor_id).maybeSingle();
             vendedorEmail = (perfil?.email || '').trim().toLowerCase();
         }
         let vendedorVpId = null;
@@ -120,41 +157,18 @@ async function syncPropostaToVpclick(prop_id) {
             const { data: vp } = await vpclick.from('profiles').select('id').ilike('email', vendedorEmail).maybeSingle();
             vendedorVpId = vp?.id || null;
         }
-
-        // Vendedor é o responsável principal; gestores acompanham (sem duplicar)
         const main = vendedorVpId || VPCLICK_MARCUS;
         const followers = VPCLICK_FOLLOWERS.filter(id => id !== main);
-
-        const cliente = prop.clientes?.razao_social || prop.titulo || 'Cliente';
-        const valor = Number(prop.valor_total || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-        const tipo = prop.data_json?.specs?.type || prop.data_json?.proposalType || '';
         const hoje = new Date();
-        const due = new Date(hoje.getTime() + 7 * 24 * 60 * 60 * 1000);
         const fmt = d => d.toISOString().slice(0, 10);
 
-        const description = [
-            'Proposta comercial criada no sistema de Propostas.',
-            '',
-            `• Nº: ${prop.numero ?? '—'}`,
-            `• Cliente: ${cliente}`,
-            tipo ? `• Tipo: ${tipo}` : null,
-            `• Vendedor: ${vendedorNome || '—'}`,
-            `• Valor: ${valor}`,
-            '',
-            'Acompanhamento: Jurídico (Bianca) e Gestores Comerciais (Marcus e Guilherme).',
-            'Abrir sistema: https://propostas.vpsistema.com',
-        ].filter(v => v !== null).join('\n');
-
         const { data: task, error: errTask } = await vpclick.from('tasks').insert({
-            title: `Proposta Nº ${prop.numero ?? ''} — ${cliente}`.trim(),
-            description,
-            status: 'Enviada',
-            priority: 'Alta',
+            title, description, status, priority: 'Alta',
             list_id: VPCLICK_LIST_ID,
             main_assignee_id: main,
             secondary_assignee_ids: followers,
             start_date: fmt(hoje),
-            due_date: fmt(due),
+            due_date: fmt(new Date(hoje.getTime() + 7 * 864e5)),
             created_by: vendedorVpId,
             tags: ['Proposta'],
         }).select('id').single();
@@ -167,7 +181,7 @@ async function syncPropostaToVpclick(prop_id) {
             vpclick_task_id: task.id,
             vpclick_list_id: VPCLICK_LIST_ID,
         });
-        console.log(`[vpclick] tarefa ${task.id} criada para proposta nº ${prop.numero}`);
+        console.log(`[vpclick] tarefa ${task.id} criada para proposta nº ${prop.numero} (${status})`);
     } catch (e) {
         console.error('[vpclick] erro na integração:', e.message);
     }
@@ -500,6 +514,7 @@ app.post('/api/proposals_update.php', requireToken, async (req, res) => {
         console.error('[proposals_update] update propostas falhou:', errUpd.message);
         return res.status(500).json({ ok: false, error: `Erro ao atualizar proposta: ${errUpd.message}` });
     }
+    syncPropostaToVpclick(id); // mantém a tarefa do VP Click em dia (título/valor/status)
     return res.json({ ok: true, id });
 });
 
@@ -551,6 +566,7 @@ app.post('/api/proposals_mark_won.php', requireToken, async (req, res) => {
         aprovada_em: new Date().toISOString()
     }).eq('id', id);
     if (error) return res.status(500).json({ ok: false, error: 'Erro ao marcar como ganha' });
+    syncPropostaToVpclick(id); // atualiza a tarefa do VP Click para "Aprovada"
     return res.json({ ok: true });
 });
 
