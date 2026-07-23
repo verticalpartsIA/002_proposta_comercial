@@ -154,3 +154,13 @@ O servidor sobe na porta `3000` (ou `PORT`). Diagnóstico rápido em
 <p align="center">
   <sub>VerticalParts © 2026 · Documentação e correções por Claude (Anthropic)</sub>
 </p>
+
+---
+
+## Contributors
+
+- Gelson Simões — criador e responsável pelas soluções VerticalParts
+
+---
+
+**Feito por Gelson Simões**
