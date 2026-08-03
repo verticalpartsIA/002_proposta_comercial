@@ -27,7 +27,11 @@ const SB_CENTRAL_ANON = process.env.SB_CENTRAL_ANON || '';
 // Portanto NÃO há código de integração aqui — ver repositório vp-click.
 
 // ── JWT ──────────────────────────────────────────────────────────────
-const JWT_SECRET = process.env.JWT_SECRET || 'vp-propostas-secret-2026';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    console.error('JWT_SECRET não definido. Configure a variável de ambiente antes de subir o servidor.');
+    process.exit(1);
+}
 
 // ── Email (PIN login) ─────────────────────────────────────────────────
 const EMAIL_HOST = process.env.EMAIL_HOST || '';
